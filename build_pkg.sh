@@ -12,13 +12,26 @@
 # Usage:
 #   chmod +x build_pkg.sh
 #   ./build_pkg.sh
+#   ./build_pkg.sh --no-signature   # skip all code signing
 #
 set -euo pipefail
+
+NO_SIGNATURE=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-signature) NO_SIGNATURE=true ;;
+    esac
+done
 
 VERSION="1.0.0"
 IDENTIFIER="com.taurino.driver"
 PKG_NAME="Taurino-${VERSION}.pkg"
-CODE_SIGN_IDENTITY="${TAURINO_CODESIGN_IDENTITY:--}"
+
+if [ "${NO_SIGNATURE}" = true ]; then
+    CODE_SIGN_IDENTITY="NONE"
+else
+    CODE_SIGN_IDENTITY="${TAURINO_CODESIGN_IDENTITY:--}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
@@ -75,15 +88,22 @@ resolve_sign_identity() {
     return 1
 }
 
-CODE_SIGN_IDENTITY="$(resolve_sign_identity "${CODE_SIGN_IDENTITY}")"
-
-if [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
-    echo "==> Using signing identity: ${CODE_SIGN_IDENTITY}"
+if [ "${CODE_SIGN_IDENTITY}" = "NONE" ]; then
+    echo "==> Signing disabled (--no-signature)"
+else
+    CODE_SIGN_IDENTITY="$(resolve_sign_identity "${CODE_SIGN_IDENTITY}")"
+    if [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
+        echo "==> Using signing identity: ${CODE_SIGN_IDENTITY}"
+    fi
 fi
 
 sign_target() {
     local target="$1"
     if [ ! -f "${target}" ]; then
+        return 0
+    fi
+    if [ "${CODE_SIGN_IDENTITY}" = "NONE" ]; then
+        echo "    Skipping signature for $(basename "${target}")"
         return 0
     fi
     if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
@@ -120,27 +140,33 @@ clang -Wall -Wextra -O2 \
     -o "${HELPER_BIN}" "${HELPER_SRC}/taurino_hid_helper.c"
 sign_target "${HELPER_BIN}"
 
-# Verify the signature and entitlement were applied.
-echo "==> Verifying helper binary..."
-if codesign --verify --verbose "${HELPER_BIN}" 2>/dev/null; then
-    echo "    Code signature: valid"
+if [ "${CODE_SIGN_IDENTITY}" = "NONE" ]; then
+    echo "==> Skipping signature verification (--no-signature)"
+    echo "    NOTE: HID virtual device creation will fail without a signed helper."
+    echo "    You can sign later with: codesign --force --sign <identity> --entitlements packaging/taurino-hid.entitlements ${HELPER_BIN}"
 else
-    echo "    Code signature: INVALID — HID device creation will fail at runtime."
-fi
-if codesign -d --entitlements - "${HELPER_BIN}" 2>&1 | grep -q "com.apple.developer.hid.virtual.device"; then
-    echo "    HID entitlement: present"
-else
-    echo "    HID entitlement: MISSING — virtual gamepad will not be created."
-    echo "    Set TAURINO_CODESIGN_IDENTITY to a valid Developer ID."
-fi
+    # Verify the signature and entitlement were applied.
+    echo "==> Verifying helper binary..."
+    if codesign --verify --verbose "${HELPER_BIN}" 2>/dev/null; then
+        echo "    Code signature: valid"
+    else
+        echo "    Code signature: INVALID — HID device creation will fail at runtime."
+    fi
+    if codesign -d --entitlements - "${HELPER_BIN}" 2>&1 | grep -q "com.apple.developer.hid.virtual.device"; then
+        echo "    HID entitlement: present"
+    else
+        echo "    HID entitlement: MISSING — virtual gamepad will not be created."
+        echo "    Set TAURINO_CODESIGN_IDENTITY to a valid Developer ID."
+    fi
 
-if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
-    echo "==> Using ad-hoc signing for the HID helper. If macOS rejects the"
-    echo "    virtual HID device, rebuild with TAURINO_CODESIGN_IDENTITY set"
-    echo "    to an Apple signing identity."
-else
-    echo "==> HID helper binary signed with developer identity."
-    echo "    Only the helper needs the HID entitlement — not Python."
+    if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
+        echo "==> Using ad-hoc signing for the HID helper. If macOS rejects the"
+        echo "    virtual HID device, rebuild with TAURINO_CODESIGN_IDENTITY set"
+        echo "    to an Apple signing identity."
+    else
+        echo "==> HID helper binary signed with developer identity."
+        echo "    Only the helper needs the HID entitlement — not Python."
+    fi
 fi
 
 echo "==> Virtualenv ready ($(du -sh "${VENV_ROOT}" | cut -f1))"
@@ -335,7 +361,7 @@ After installation, run:
 DIST
 
 echo "==> Building product package..."
-if [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
+if [ "${CODE_SIGN_IDENTITY}" != "NONE" ] && [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
     # Derive the "Developer ID Installer" identity from the application one.
     INSTALLER_IDENTITY="$(echo "${CODE_SIGN_IDENTITY}" | sed 's/Developer ID Application/Developer ID Installer/')"
     # If the derived name exists in the keychain, sign; otherwise skip.
