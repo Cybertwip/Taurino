@@ -98,6 +98,28 @@ def run_gui(vendor_id: int | None = None,
         s = _text(label, "label", tc)
         screen.blit(s, s.get_rect(center=r.center))
 
+    def draw_round_button(label, cx, cy, radius, pressed, active_color=None):
+        col = active_color or GREEN
+        fill = col if pressed else PANEL2
+        border = col if pressed else MUTED
+        ccx, ccy = sc(cx, cy)
+        rr = si(radius)
+        lw = max(1, si(2))
+        pygame.draw.circle(screen, fill, (ccx, ccy), rr)
+        pygame.draw.circle(screen, border, (ccx, ccy), rr, width=lw)
+        tc = BG if pressed else TEXT
+        s = _text(label, "label", tc)
+        screen.blit(s, s.get_rect(center=(ccx, ccy)))
+
+    def draw_dpad(cx, cy, arm, gap, state_obj):
+        size = arm
+        draw_button("U", cx - size / 2, cy - gap - size, size, size, state_obj.dpad_up)
+        draw_button("D", cx - size / 2, cy + gap, size, size, state_obj.dpad_down)
+        draw_button("L", cx - gap - size, cy - size / 2, size, size, state_obj.dpad_left)
+        draw_button("R", cx + gap, cy - size / 2, size, size, state_obj.dpad_right)
+        pygame.draw.circle(screen, PANEL2, sc(cx, cy), si(size * 0.28))
+        pygame.draw.circle(screen, MUTED, sc(cx, cy), si(size * 0.28), width=max(1, si(2)))
+
     def draw_trigger(label, val, tx, ty, tw, th):
         r = sr(tx, ty, tw, th)
         br = max(1, si(12))
@@ -105,13 +127,14 @@ def run_gui(vendor_id: int | None = None,
         lw = max(1, si(2))
         pygame.draw.rect(screen, PANEL2, r, border_radius=br)
         pygame.draw.rect(screen, MUTED, r, width=lw, border_radius=br)
-        fill_h = int((min(1023, max(0, val)) / 1023) * (r.height - 2 * pad))
-        if fill_h:
-            fr = pygame.Rect(r.x + pad, r.bottom - pad - fill_h,
-                             r.width - 2 * pad, fill_h)
+        fill_w = int((min(1023, max(0, val)) / 1023) * (r.width - 2 * pad))
+        if fill_w:
+            fr = pygame.Rect(r.x + pad, r.y + pad, fill_w, r.height - 2 * pad)
             pygame.draw.rect(screen, YELLOW, fr, border_radius=max(1, si(8)))
-        draw_text(label, "label", TEXT, (tx, ty - 28))
-        draw_text(str(val), "small", MUTED, (tx, ty + th + 8))
+        label_s = _text(label, "label", TEXT)
+        value_s = _text(str(val), "small", MUTED)
+        screen.blit(label_s, label_s.get_rect(midbottom=sc(tx + tw / 2, ty - 8)))
+        screen.blit(value_s, value_s.get_rect(midtop=sc(tx + tw / 2, ty + th + 8)))
 
     def draw_stick(label, cx, cy, rad, xv, yv):
         scx, scy = sc(cx, cy)
@@ -127,9 +150,10 @@ def run_gui(vendor_id: int | None = None,
         knob = si(18)
         pygame.draw.circle(screen, BLUE, (kx, ky), knob)
         pygame.draw.circle(screen, TEXT, (kx, ky), knob, width=lw)
-        draw_text(label, "label", TEXT, (cx - rad, cy + rad + 16))
-        draw_text(f"x={xv:6d}  y={yv:6d}", "small", MUTED,
-                  (cx - rad, cy + rad + 44))
+        label_s = _text(label, "label", TEXT)
+        coords_s = _text(f"x={xv:6d}  y={yv:6d}", "small", MUTED)
+        screen.blit(label_s, label_s.get_rect(midtop=sc(cx, cy + rad + 18)))
+        screen.blit(coords_s, coords_s.get_rect(midtop=sc(cx, cy + rad + 46)))
 
     # -- Controller worker thread ---------------------------------------------
     state = ControllerState()
@@ -241,42 +265,41 @@ def run_gui(vendor_id: int | None = None,
         draw_text("Esc: quit   R: rumble   T: trigger rumble   L: LED",
                   "small", MUTED, (40, 68))
 
-        pygame.draw.rect(screen, PANEL, sr(32, 110, 1036, 610),
-                         border_radius=max(1, si(24)))
+        left_grip = sr(62, 178, 356, 438)
+        right_grip = sr(682, 178, 356, 438)
+        center_body = sr(220, 148, 660, 370)
+        pygame.draw.ellipse(screen, PANEL, left_grip)
+        pygame.draw.ellipse(screen, PANEL, right_grip)
+        pygame.draw.rect(screen, PANEL, center_body, border_radius=max(1, si(58)))
+        pygame.draw.ellipse(screen, PANEL2, sr(152, 220, 236, 310), width=max(1, si(2)))
+        pygame.draw.ellipse(screen, PANEL2, sr(712, 220, 236, 310), width=max(1, si(2)))
 
-        # Sticks
-        draw_stick("Left Stick", 220, 280, 110,
-                   cur.left_stick_x, cur.left_stick_y)
-        draw_stick("Right Stick", 860, 280, 110,
-                   cur.right_stick_x, cur.right_stick_y)
+        # Shoulders / triggers
+        draw_trigger("LT", cur.left_trigger, 126, 92, 178, 36)
+        draw_trigger("RT", cur.right_trigger, 796, 92, 178, 36)
+        draw_button("LB", 164, 140, 110, 42, cur.left_bumper)
+        draw_button("RB", 826, 140, 110, 42, cur.right_bumper)
 
-        # Triggers
-        draw_trigger("LT", cur.left_trigger, 90, 470, 72, 180)
-        draw_trigger("RT", cur.right_trigger, 938, 470, 72, 180)
+        # Center cluster
+        draw_button("VIEW", 434, 218, 96, 42, cur.view)
+        draw_button("MENU", 570, 218, 96, 42, cur.menu)
+        draw_button("GUIDE", 502, 162, 96, 40, cur.guide, BLUE)
+        draw_button("SYNC", 502, 272, 96, 40, cur.sync, BLUE)
 
-        # D-Pad
-        draw_button("U", 392, 252, 54, 54, cur.dpad_up)
-        draw_button("D", 392, 368, 54, 54, cur.dpad_down)
-        draw_button("L", 334, 310, 54, 54, cur.dpad_left)
-        draw_button("R", 450, 310, 54, 54, cur.dpad_right)
+        # Left side
+        draw_stick("Left Stick", 274, 302, 104,
+               cur.left_stick_x, cur.left_stick_y)
+        draw_dpad(284, 500, 52, 4, cur)
+        draw_button("LS", 220, 634, 108, 42, cur.left_stick_press)
 
-        # Center
-        draw_button("VIEW", 470, 500, 100, 48, cur.view)
-        draw_button("MENU", 598, 500, 100, 48, cur.menu)
-        draw_button("SYNC", 536, 210, 96, 44, cur.sync, BLUE)
-        draw_button("GUIDE", 536, 160, 96, 40, cur.guide, BLUE)
-
-        # Bumpers / stick press
-        draw_button("LB", 180, 150, 90, 42, cur.left_bumper)
-        draw_button("RB", 830, 150, 90, 42, cur.right_bumper)
-        draw_button("LS", 178, 620, 84, 40, cur.left_stick_press)
-        draw_button("RS", 818, 620, 84, 40, cur.right_stick_press)
-
-        # Face buttons
-        draw_button("Y", 744, 268, 58, 58, cur.y, (246, 208, 84))
-        draw_button("X", 686, 326, 58, 58, cur.x, (93, 170, 255))
-        draw_button("B", 802, 326, 58, 58, cur.b, (255, 132, 96))
-        draw_button("A", 744, 384, 58, 58, cur.a, (96, 216, 160))
+        # Right side
+        draw_round_button("Y", 812, 288, 32, cur.y, (246, 208, 84))
+        draw_round_button("X", 754, 346, 32, cur.x, (93, 170, 255))
+        draw_round_button("B", 870, 346, 32, cur.b, (255, 132, 96))
+        draw_round_button("A", 812, 404, 32, cur.a, (96, 216, 160))
+        draw_stick("Right Stick", 748, 520, 104,
+               cur.right_stick_x, cur.right_stick_y)
+        draw_button("RS", 694, 634, 108, 42, cur.right_stick_press)
 
         # Status text
         lines = [
@@ -285,9 +308,9 @@ def run_gui(vendor_id: int | None = None,
             f"Rumble: {'on' if rumble_on else 'off'}  |  LED: {led_levels[led_idx]}",
         ]
         for i, line in enumerate(lines):
-            draw_text(line, "small", MUTED, (440, 580 + i * 22))
+            draw_text(line, "small", MUTED, (404, 586 + i * 22))
         if st_err:
-            draw_text(st_err[:60], "small", RED, (440, 580 + len(lines) * 22))
+            draw_text(st_err[:60], "small", RED, (404, 586 + len(lines) * 22))
 
         # Disconnected overlay
         if not st_conn:
