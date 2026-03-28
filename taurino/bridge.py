@@ -45,6 +45,9 @@ def _codesign_entitlements_text(executable: str) -> str | None:
     except OSError:
         return None
     if result.returncode != 0:
+        combined = ((result.stdout or "") + (result.stderr or "")).lower()
+        if "not signed at all" in combined or "code object is not signed" in combined:
+            return ""
         return None
     return (result.stdout or "") + (result.stderr or "")
 
