@@ -28,6 +28,7 @@ from .state import ControllerState
 
 
 HID_VIRTUAL_DEVICE_ENTITLEMENT = "com.apple.developer.hid.virtual.device"
+DISABLE_LIBRARY_VALIDATION_ENTITLEMENT = "com.apple.security.cs.disable-library-validation"
 INSTALL_ROOT = "/usr/local/lib/taurino"
 INSTALL_PYTHON = f"{INSTALL_ROOT}/bin/python"
 INSTALL_LAUNCHER = "/usr/local/bin/taurino"
@@ -59,6 +60,38 @@ def has_hid_virtual_device_entitlement(executable: str) -> bool | None:
     return HID_VIRTUAL_DEVICE_ENTITLEMENT in text
 
 
+def has_disable_library_validation_entitlement(executable: str) -> bool | None:
+    text = _codesign_entitlements_text(executable)
+    if text is None:
+        return None
+    return DISABLE_LIBRARY_VALIDATION_ENTITLEMENT in text
+
+
+def is_hardened_runtime_enabled(executable: str) -> bool | None:
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--verbose=4", executable],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        combined = ((result.stdout or "") + (result.stderr or "")).lower()
+        if "not signed at all" in combined or "code object is not signed" in combined:
+            return False
+        return None
+    text = (result.stdout or "") + (result.stderr or "")
+    return "flags=0x10000(runtime)" in text
+
+
+def likely_library_validation_failure(executable: str) -> bool:
+    hardened = is_hardened_runtime_enabled(executable)
+    disable_lv = has_disable_library_validation_entitlement(executable)
+    return hardened is True and disable_lv is not True
+
+
 def get_bridge_runtime_status() -> dict[str, object]:
     current_executable = sys.executable
     installed_runtime_exists = os.path.exists(INSTALL_PYTHON)
@@ -67,10 +100,22 @@ def get_bridge_runtime_status() -> dict[str, object]:
         "current_executable": current_executable,
         "current_has_entitlement": has_hid_virtual_device_entitlement(
             current_executable),
+        "current_disable_library_validation": (
+            has_disable_library_validation_entitlement(current_executable)
+        ),
+        "current_hardened_runtime": is_hardened_runtime_enabled(current_executable),
         "installed_runtime_exists": installed_runtime_exists,
         "installed_python": INSTALL_PYTHON if installed_runtime_exists else None,
         "installed_has_entitlement": (
             has_hid_virtual_device_entitlement(INSTALL_PYTHON)
+            if installed_runtime_exists else None
+        ),
+        "installed_disable_library_validation": (
+            has_disable_library_validation_entitlement(INSTALL_PYTHON)
+            if installed_runtime_exists else None
+        ),
+        "installed_hardened_runtime": (
+            is_hardened_runtime_enabled(INSTALL_PYTHON)
             if installed_runtime_exists else None
         ),
         "installed_launcher_exists": installed_launcher_exists,
@@ -93,15 +138,29 @@ def format_bridge_doctor_report() -> str:
         "",
         f"Current runtime: {status['current_executable']}",
         f"Current HID entitlement: {fmt(status['current_has_entitlement'])}",
+        f"Current hardened runtime: {fmt(status['current_hardened_runtime'])}",
+        "Current disable-library-validation: "
+        f"{fmt(status['current_disable_library_validation'])}",
         f"Installed launcher: {'present' if status['installed_launcher_exists'] else 'missing'} ({INSTALL_LAUNCHER})",
         f"Installed runtime: {'present' if status['installed_runtime_exists'] else 'missing'} ({INSTALL_PYTHON})",
         f"Installed HID entitlement: {fmt(status['installed_has_entitlement'])}",
+        f"Installed hardened runtime: {fmt(status['installed_hardened_runtime'])}",
+        "Installed disable-library-validation: "
+        f"{fmt(status['installed_disable_library_validation'])}",
         f"LaunchAgent: {'present' if status['launch_agent_exists'] else 'missing'} ({LAUNCH_AGENT_PATH})",
         "",
     ]
 
-    if status["current_has_entitlement"] is True:
+    if likely_library_validation_failure(status["current_executable"]):
+        lines.append(
+            "Current runtime is hardened without disable-library-validation; macOS may kill it before Taurino starts."
+        )
+    elif status["current_has_entitlement"] is True:
         lines.append("This runtime is entitled for virtual HID.")
+    elif status["installed_runtime_exists"] and likely_library_validation_failure(INSTALL_PYTHON):
+        lines.append(
+            "Installed runtime is hardened without disable-library-validation. Reinstall Taurino with the updated installer or pkg."
+        )
     elif status["installed_has_entitlement"] is True:
         lines.append(
             "Use /usr/local/bin/taurino bridge for system-wide HID instead of the repo Python."
@@ -120,12 +179,20 @@ def format_hid_unavailable_message(error: Exception) -> str:
     lines.append(f"Current runtime: {status['current_executable']}")
 
     current_has_entitlement = status["current_has_entitlement"]
+    if likely_library_validation_failure(status["current_executable"]):
+        lines.append(
+            "Current runtime is hardened without disable-library-validation and may be terminated by macOS before Python starts."
+        )
     if current_has_entitlement is False:
         lines.append(
             "Current runtime is not signed with com.apple.developer.hid.virtual.device."
         )
 
-    if status["installed_has_entitlement"] is True:
+    if status["installed_runtime_exists"] and likely_library_validation_failure(INSTALL_PYTHON):
+        lines.append(
+            "Installed Taurino runtime is also hardened without disable-library-validation. Reinstall with the updated installer or pkg."
+        )
+    elif status["installed_has_entitlement"] is True:
         lines.append(
             "Installed entitled runtime detected. Start the system bridge with /usr/local/bin/taurino bridge."
         )

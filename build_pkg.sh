@@ -26,6 +26,61 @@ PAYLOAD="${BUILD_DIR}/payload"
 SCRIPTS="${BUILD_DIR}/scripts"
 ENTITLEMENTS="${SCRIPT_DIR}/packaging/taurino-hid.entitlements"
 
+resolve_sign_identity() {
+    local requested="$1"
+    local identities matches count requested_team
+
+    if [ "${requested}" = "-" ]; then
+        printf '%s\n' "-"
+        return 0
+    fi
+
+    identities="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)"$/\1/p')"
+    if [ -z "${identities}" ]; then
+        echo "No macOS code-signing identities found in keychain." >&2
+        return 1
+    fi
+
+    if printf '%s\n' "${identities}" | grep -Fx -- "${requested}" >/dev/null; then
+        printf '%s\n' "${requested}"
+        return 0
+    fi
+
+    matches="$(printf '%s\n' "${identities}" | grep -i -- "${requested}" || true)"
+    count="$(printf '%s\n' "${matches}" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+    if [ "${count}" = "1" ]; then
+        printf '%s\n' "${matches}" | sed -n '1p'
+        return 0
+    fi
+
+    requested_team="$(printf '%s\n' "${requested}" | sed -n 's/.*(\([^)]*\)).*/\1/p')"
+    if [ -n "${requested_team}" ]; then
+        matches="$(printf '%s\n' "${identities}" | grep -F "(${requested_team})" || true)"
+        count="$(printf '%s\n' "${matches}" | sed '/^$/d' | wc -l | tr -d ' ')"
+        if [ "${count}" = "1" ]; then
+            printf '%s\n' "${matches}" | sed -n '1p'
+            return 0
+        fi
+    fi
+
+    if [ "${count}" = "0" ]; then
+        echo "Requested signing identity not found: ${requested}" >&2
+    else
+        echo "Requested signing identity is ambiguous: ${requested}" >&2
+        printf '%s\n' "${matches}" >&2
+    fi
+    echo "Available identities:" >&2
+    printf '%s\n' "${identities}" >&2
+    return 1
+}
+
+CODE_SIGN_IDENTITY="$(resolve_sign_identity "${CODE_SIGN_IDENTITY}")"
+
+if [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
+    echo "==> Using signing identity: ${CODE_SIGN_IDENTITY}"
+fi
+
 sign_target() {
     local target="$1"
     if [ ! -f "${target}" ]; then
@@ -38,8 +93,6 @@ sign_target() {
             --force \
             --sign "${CODE_SIGN_IDENTITY}" \
             --entitlements "${ENTITLEMENTS}" \
-            --timestamp \
-            --options runtime \
             "${target}"
     fi
 }
@@ -67,6 +120,10 @@ if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
     echo "==> Using ad-hoc signing. If macOS still rejects virtual HID on this"
     echo "    machine, rebuild with TAURINO_CODESIGN_IDENTITY set to an Apple"
     echo "    signing identity."
+else
+    echo "==> Installed runtime will be signed without hardened runtime."
+    echo "    This avoids launch-time library validation failures against"
+    echo "    Homebrew's unsigned Python framework and extension modules."
 fi
 
 echo "==> Virtualenv ready ($(du -sh "${VENV_ROOT}" | cut -f1))"

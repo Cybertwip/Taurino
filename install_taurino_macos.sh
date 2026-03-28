@@ -33,8 +33,6 @@ sign_target() {
             --force \
             --sign "${CODE_SIGN_IDENTITY}" \
             --entitlements "${ENTITLEMENTS}" \
-            --timestamp \
-            --options runtime \
             "${target}"
     fi
 }
@@ -50,6 +48,9 @@ sign_target "${INSTALL_ROOT}/bin/python"
 if [[ -f "${INSTALL_ROOT}/bin/python3" ]]; then
     sign_target "${INSTALL_ROOT}/bin/python3"
 fi
+
+echo "==> Installed runtime is signed without hardened runtime"
+echo "    to avoid library validation failures against Homebrew Python."
 
 echo "==> Installing launcher"
 mkdir -p "${BIN_DIR}"
