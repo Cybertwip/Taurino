@@ -7,6 +7,21 @@ from .state import ControllerState
 from .controller import PDP360Controller
 
 
+def stick_knob_offset(xv: int, yv: int, radius: int) -> tuple[int, int]:
+    """Map controller axes to screen-space offsets for the stick knob."""
+    if radius <= 0:
+        return 0, 0
+
+    def clamp_axis(value: int) -> int:
+        return max(-32767, min(32767, value))
+
+    x = clamp_axis(xv)
+    y = clamp_axis(yv)
+    dx = int((x / 32767) * radius) if x else 0
+    dy = int((y / 32767) * radius) if y else 0
+    return dx, dy
+
+
 def run_gui(vendor_id: int | None = None,
             product_id: int | None = None) -> None:
     try:
@@ -178,8 +193,9 @@ def run_gui(vendor_id: int | None = None,
         pygame.draw.line(screen, MUTED, (scx - sr_, scy), (scx + sr_, scy), 1)
         pygame.draw.line(screen, MUTED, (scx, scy - sr_), (scx, scy + sr_), 1)
         kr = sr_ - si(16)
-        kx = scx + int((xv / 32767) * kr) if xv else scx
-        ky = scy - int((yv / 32767) * kr) if yv else scy
+        dx, dy = stick_knob_offset(xv, yv, kr)
+        kx = scx + dx
+        ky = scy + dy
         knob = si(20)
         pygame.draw.circle(screen, BLUE, (kx, ky), knob)
         pygame.draw.circle(screen, TEXT, (kx, ky), knob, width=lw)
