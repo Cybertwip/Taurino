@@ -303,13 +303,13 @@ class PDP360Controller:
         ry = ~ry
 
         dz = self._dead_zone
-        if abs(lx) < dz:
+        if abs(lx) <= dz:
             lx = 0
-        if abs(ly) < dz:
+        if abs(ly) <= dz:
             ly = 0
-        if abs(rx) < dz:
+        if abs(rx) <= dz:
             rx = 0
-        if abs(ry) < dz:
+        if abs(ry) <= dz:
             ry = 0
 
         return ControllerState(
