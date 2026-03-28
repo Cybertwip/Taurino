@@ -266,7 +266,7 @@ class PDP360Controller:
         """Drain queued USB packets, return the freshest input state or None."""
         latest = None
         for i in range(max_packets):
-            t = timeout_ms if i == 0 else 0
+            t = timeout_ms if i == 0 else 1  # 1ms to prevent infinite blocking on empty queue
             data = self.read_raw(t)
             if data is None:
                 break
@@ -345,7 +345,7 @@ class PDP360Controller:
                      min(255, max(0, right_trigger)),
                      min(255, max(0, left)),
                      min(255, max(0, right)),
-                     0xFF, 0x00, 0x00])
+                     0xFF, 0x00])
         self._send(msg)
 
     def set_led(self, brightness: int = 20) -> None:
