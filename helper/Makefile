@@ -4,6 +4,7 @@
 #   make                       Build the helper
 #   make sign                  Ad-hoc sign with HID entitlement
 #   make sign IDENTITY="Developer ID Application: ..."
+#   TAURINO_CODESIGN_IDENTITY="Developer ID ..." make sign
 #   make clean
 #
 CC        = clang
@@ -11,7 +12,9 @@ CFLAGS    = -Wall -Wextra -O2
 FRAMEWORKS = -framework CoreFoundation -framework IOKit
 
 ENTITLEMENTS = ../packaging/taurino-hid.entitlements
-IDENTITY    ?= -
+
+# Inherit TAURINO_CODESIGN_IDENTITY from the environment, fall back to ad-hoc.
+IDENTITY    ?= $(or $(TAURINO_CODESIGN_IDENTITY),-)
 
 TARGET = taurino-hid-helper
 SOURCE = taurino_hid_helper.c

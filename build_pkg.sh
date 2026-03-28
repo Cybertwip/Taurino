@@ -120,6 +120,20 @@ clang -Wall -Wextra -O2 \
     -o "${HELPER_BIN}" "${HELPER_SRC}/taurino_hid_helper.c"
 sign_target "${HELPER_BIN}"
 
+# Verify the signature and entitlement were applied.
+echo "==> Verifying helper binary..."
+if codesign --verify --verbose "${HELPER_BIN}" 2>/dev/null; then
+    echo "    Code signature: valid"
+else
+    echo "    Code signature: INVALID — HID device creation will fail at runtime."
+fi
+if codesign -d --entitlements - "${HELPER_BIN}" 2>&1 | grep -q "com.apple.developer.hid.virtual.device"; then
+    echo "    HID entitlement: present"
+else
+    echo "    HID entitlement: MISSING — virtual gamepad will not be created."
+    echo "    Set TAURINO_CODESIGN_IDENTITY to a valid Developer ID."
+fi
+
 if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
     echo "==> Using ad-hoc signing for the HID helper. If macOS rejects the"
     echo "    virtual HID device, rebuild with TAURINO_CODESIGN_IDENTITY set"
@@ -321,10 +335,30 @@ After installation, run:
 DIST
 
 echo "==> Building product package..."
-productbuild \
-    --distribution "${DIST_XML}" \
-    --package-path "${BUILD_DIR}" \
-    "${BUILD_DIR}/${PKG_NAME}"
+if [ "${CODE_SIGN_IDENTITY}" != "-" ]; then
+    # Derive the "Developer ID Installer" identity from the application one.
+    INSTALLER_IDENTITY="$(echo "${CODE_SIGN_IDENTITY}" | sed 's/Developer ID Application/Developer ID Installer/')"
+    # If the derived name exists in the keychain, sign; otherwise skip.
+    if security find-identity -v -p basic 2>/dev/null | grep -qF "${INSTALLER_IDENTITY}"; then
+        echo "    Signing .pkg with: ${INSTALLER_IDENTITY}"
+        productbuild \
+            --distribution "${DIST_XML}" \
+            --package-path "${BUILD_DIR}" \
+            --sign "${INSTALLER_IDENTITY}" \
+            "${BUILD_DIR}/${PKG_NAME}"
+    else
+        echo "    Installer identity '${INSTALLER_IDENTITY}' not found, building unsigned .pkg"
+        productbuild \
+            --distribution "${DIST_XML}" \
+            --package-path "${BUILD_DIR}" \
+            "${BUILD_DIR}/${PKG_NAME}"
+    fi
+else
+    productbuild \
+        --distribution "${DIST_XML}" \
+        --package-path "${BUILD_DIR}" \
+        "${BUILD_DIR}/${PKG_NAME}"
+fi
 
 # --------------------------------------------------------------------------
 #  Done

@@ -148,20 +148,28 @@ class VirtualHIDGamepad:
     def open(self):
         if not self._try_connect():
             self._start_helper()
-            if not self._try_connect():
+            if not self._try_connect_retry():
+                stderr_hint = self._read_helper_stderr()
                 raise HIDHelperError(
                     "Cannot connect to taurino-hid-helper. "
-                    "Build it with: cd helper && make && make sign")
+                    + (f"Helper stderr: {stderr_hint}" if stderr_hint else
+                       "Build it with: cd helper && make && make sign"))
 
         # The helper sends a 1-byte status after the device is created.
-        data = self._sock.recv(1)
+        try:
+            data = self._sock.recv(1)
+        except OSError:
+            data = b""
         if not data or data[0] != 0x01:
-            self._sock.close()
-            self._sock = None
+            if self._sock:
+                self._sock.close()
+                self._sock = None
+            stderr_hint = self._read_helper_stderr()
             raise HIDHelperError(
                 "taurino-hid-helper failed to create virtual HID device. "
                 "Ensure the binary is codesigned with the "
-                "com.apple.developer.hid.virtual.device entitlement.")
+                "com.apple.developer.hid.virtual.device entitlement."
+                + (f" Helper: {stderr_hint}" if stderr_hint else ""))
 
         print("[taurino] Virtual HID gamepad created via native helper — "
               "apps should see 'Taurino Virtual Gamepad'")
@@ -176,6 +184,18 @@ class VirtualHIDGamepad:
         except (OSError, ConnectionRefusedError):
             return False
 
+    def _try_connect_retry(self, attempts: int = 10,
+                           base_delay: float = 0.15) -> bool:
+        """Retry connecting with exponential backoff."""
+        for i in range(attempts):
+            if self._helper_proc and self._helper_proc.poll() is not None:
+                # Helper already exited — no point retrying.
+                return False
+            if self._try_connect():
+                return True
+            time.sleep(min(base_delay * (1.5 ** i), 2.0))
+        return False
+
     def _start_helper(self):
         helper_path = _find_helper()
         if not helper_path:
@@ -186,10 +206,22 @@ class VirtualHIDGamepad:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
-            # Give the helper time to create the socket.
-            time.sleep(0.3)
         except OSError:
             self._helper_proc = None
+
+    def _read_helper_stderr(self) -> str:
+        """Read available stderr from the helper (non-blocking)."""
+        if not self._helper_proc or not self._helper_proc.stderr:
+            return ""
+        try:
+            import select
+            if select.select([self._helper_proc.stderr], [], [], 0.5)[0]:
+                data = self._helper_proc.stderr.read(4096)
+                if data:
+                    return data.decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        return ""
 
     def send_report(self, state: ControllerState) -> bool:
         if not self._sock:
