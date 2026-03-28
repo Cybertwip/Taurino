@@ -92,6 +92,11 @@ def likely_library_validation_failure(executable: str) -> bool:
     return hardened is True and disable_lv is not True
 
 
+def status_has_library_validation_risk(hardened: bool | None,
+                                       disable_lv: bool | None) -> bool:
+    return hardened is True and disable_lv is not True
+
+
 def get_bridge_runtime_status() -> dict[str, object]:
     current_executable = sys.executable
     installed_runtime_exists = os.path.exists(INSTALL_PYTHON)
@@ -151,13 +156,22 @@ def format_bridge_doctor_report() -> str:
         "",
     ]
 
-    if likely_library_validation_failure(status["current_executable"]):
+    current_library_validation_risk = status_has_library_validation_risk(
+        status["current_hardened_runtime"],
+        status["current_disable_library_validation"],
+    )
+    installed_library_validation_risk = status_has_library_validation_risk(
+        status["installed_hardened_runtime"],
+        status["installed_disable_library_validation"],
+    )
+
+    if current_library_validation_risk:
         lines.append(
             "Current runtime is hardened without disable-library-validation; macOS may kill it before Taurino starts."
         )
     elif status["current_has_entitlement"] is True:
         lines.append("This runtime is entitled for virtual HID.")
-    elif status["installed_runtime_exists"] and likely_library_validation_failure(INSTALL_PYTHON):
+    elif status["installed_runtime_exists"] and installed_library_validation_risk:
         lines.append(
             "Installed runtime is hardened without disable-library-validation. Reinstall Taurino with the updated installer or pkg."
         )
@@ -179,7 +193,16 @@ def format_hid_unavailable_message(error: Exception) -> str:
     lines.append(f"Current runtime: {status['current_executable']}")
 
     current_has_entitlement = status["current_has_entitlement"]
-    if likely_library_validation_failure(status["current_executable"]):
+    current_library_validation_risk = status_has_library_validation_risk(
+        status["current_hardened_runtime"],
+        status["current_disable_library_validation"],
+    )
+    installed_library_validation_risk = status_has_library_validation_risk(
+        status["installed_hardened_runtime"],
+        status["installed_disable_library_validation"],
+    )
+
+    if current_library_validation_risk:
         lines.append(
             "Current runtime is hardened without disable-library-validation and may be terminated by macOS before Python starts."
         )
@@ -188,7 +211,7 @@ def format_hid_unavailable_message(error: Exception) -> str:
             "Current runtime is not signed with com.apple.developer.hid.virtual.device."
         )
 
-    if status["installed_runtime_exists"] and likely_library_validation_failure(INSTALL_PYTHON):
+    if status["installed_runtime_exists"] and installed_library_validation_risk:
         lines.append(
             "Installed Taurino runtime is also hardened without disable-library-validation. Reinstall with the updated installer or pkg."
         )
