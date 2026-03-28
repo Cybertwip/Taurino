@@ -6,22 +6,22 @@ from enum import IntFlag
 
 
 class Button(IntFlag):
-    """GIP input report button bitmask (bytes 4-5 of a 0x20 report)."""
-    DPAD_UP      = 0x0001
-    DPAD_DOWN    = 0x0002
-    DPAD_LEFT    = 0x0004
-    DPAD_RIGHT   = 0x0008
-    MENU         = 0x0010
-    VIEW         = 0x0020
-    LEFT_STICK   = 0x0040
-    RIGHT_STICK  = 0x0080
-    LEFT_BUMPER  = 0x0100
-    RIGHT_BUMPER = 0x0200
-    SYNC         = 0x0400
-    A            = 0x1000
-    B            = 0x2000
-    X            = 0x4000
-    Y            = 0x8000
+    """Normalized button bits from bytes 4-5 of a GIP 0x20 input report."""
+    VIEW         = 0x0008
+    MENU         = 0x0004
+    A            = 0x0010
+    B            = 0x0020
+    X            = 0x0040
+    Y            = 0x0080
+    DPAD_UP      = 0x0100
+    DPAD_DOWN    = 0x0200
+    DPAD_LEFT    = 0x0400
+    DPAD_RIGHT   = 0x0800
+    LEFT_BUMPER  = 0x1000
+    RIGHT_BUMPER = 0x2000
+    LEFT_STICK   = 0x4000
+    RIGHT_STICK  = 0x8000
+    SYNC         = 0x0000
 
 
 @dataclass(slots=True)

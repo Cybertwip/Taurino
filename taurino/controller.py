@@ -292,15 +292,15 @@ class PDP360Controller:
         return None
 
     def _parse_input(self, data: bytes) -> ControllerState:
-        btns = struct.unpack_from("<H", data, 4)[0]
-        # PDP Xbox One-class pads expose an XInput-like payload inside the
-        # GIP packet: buttons at 4-5, triggers as bytes at 6-7, sticks at 8-15.
-        lt_raw, rt_raw = struct.unpack_from("<BB", data, 6)
-        lx, ly, rx, ry = struct.unpack_from("<hhhh", data, 8)
+        b4 = data[4]
+        b5 = data[5]
+        btns = b4 | (b5 << 8)
+        lt, rt = struct.unpack_from("<HH", data, 6)
+        lx, ly, rx, ry = struct.unpack_from("<hhhh", data, 10)
 
-        # Normalize 8-bit trigger values into the 0-1023 range used elsewhere.
-        lt = (lt_raw * 1023) // 255
-        rt = (rt_raw * 1023) // 255
+        # Match the established Xbox One interpretation used by xpad.
+        ly = ~ly
+        ry = ~ry
 
         dz = self._dead_zone
         if abs(lx) < dz:
@@ -327,7 +327,7 @@ class PDP360Controller:
             right_bumper=bool(btns & Button.RIGHT_BUMPER),
             left_stick_press=bool(btns & Button.LEFT_STICK),
             right_stick_press=bool(btns & Button.RIGHT_STICK),
-            sync=bool(btns & Button.SYNC),
+            sync=False,
             left_trigger=lt,
             right_trigger=rt,
             left_stick_x=lx,
