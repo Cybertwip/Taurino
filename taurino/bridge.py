@@ -309,6 +309,9 @@ class ControllerBridge:
                 self._hid.open()
             except IOKitHIDError as e:
                 print(f"[taurino] HID bridge unavailable: {e}")
+                if self._use_udp:
+                    print("[taurino] Continuing in UDP-only mode. "
+                          "Use a signed/entitled build for system-wide HID.")
                 self._hid = None
 
         if self._use_udp:

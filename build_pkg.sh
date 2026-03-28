@@ -18,26 +18,61 @@ set -euo pipefail
 VERSION="1.0.0"
 IDENTIFIER="com.taurino.driver"
 PKG_NAME="Taurino-${VERSION}.pkg"
+CODE_SIGN_IDENTITY="${TAURINO_CODESIGN_IDENTITY:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 PAYLOAD="${BUILD_DIR}/payload"
 SCRIPTS="${BUILD_DIR}/scripts"
+ENTITLEMENTS="${BUILD_DIR}/taurino-hid.entitlements"
 
 echo "==> Cleaning previous build..."
 rm -rf "${BUILD_DIR}"
 mkdir -p "${PAYLOAD}" "${SCRIPTS}"
+
+cat > "${ENTITLEMENTS}" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+        <key>com.apple.developer.hid.virtual.device</key>
+        <true/>
+</dict>
+</plist>
+PLIST
 
 # --------------------------------------------------------------------------
 #  1) Create a self-contained virtualenv inside the payload
 # --------------------------------------------------------------------------
 echo "==> Creating virtualenv at payload/usr/local/lib/taurino..."
 VENV_ROOT="${PAYLOAD}/usr/local/lib/taurino"
-python3 -m venv "${VENV_ROOT}"
+python3 -m venv --copies "${VENV_ROOT}"
 
 # Install the taurino package + dependencies into the venv
 "${VENV_ROOT}/bin/pip" install --quiet --upgrade pip
 "${VENV_ROOT}/bin/pip" install --quiet "${SCRIPT_DIR}"
+
+if [ -n "${CODE_SIGN_IDENTITY}" ]; then
+    echo "==> Signing embedded Python for virtual HID entitlement..."
+    codesign \
+        --force \
+        --sign "${CODE_SIGN_IDENTITY}" \
+        --entitlements "${ENTITLEMENTS}" \
+        --timestamp \
+        --options runtime \
+        "${VENV_ROOT}/bin/python3"
+    codesign \
+        --force \
+        --sign "${CODE_SIGN_IDENTITY}" \
+        --entitlements "${ENTITLEMENTS}" \
+        --timestamp \
+        --options runtime \
+        "${VENV_ROOT}/bin/python"
+else
+    echo "==> No TAURINO_CODESIGN_IDENTITY set; system-wide virtual HID will"
+    echo "    continue to fall back to UDP-only mode on macOS 13+."
+fi
 
 echo "==> Virtualenv ready ($(du -sh "${VENV_ROOT}" | cut -f1))"
 
@@ -143,6 +178,9 @@ echo "  CLI:     taurino --help"
 echo "  GUI:     taurino gui"
 echo "  Bridge:  taurino bridge"
 echo "  Scan:    taurino scan"
+echo ""
+echo "  Note: system-wide virtual HID on macOS 13+ requires a signed build"
+echo "  with the com.apple.developer.hid.virtual.device entitlement."
 echo ""
 echo "  The bridge auto-starts when a PDP"
 echo "  controller is plugged in."
