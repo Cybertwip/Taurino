@@ -81,9 +81,9 @@ class ControllerParsingTests(unittest.TestCase):
         self.assertEqual(state.left_trigger, 512)
         self.assertEqual(state.right_trigger, 1023)
         self.assertEqual(state.left_stick_x, 12000)
-        self.assertEqual(state.left_stick_y, -8001)
+        self.assertEqual(state.left_stick_y, -8000)
         self.assertEqual(state.right_stick_x, -3000)
-        self.assertEqual(state.right_stick_y, 23999)
+        self.assertEqual(state.right_stick_y, 24000)
 
     def test_dead_zone_recenters_small_values(self):
         self.ctrl.dead_zone = 4000
@@ -92,7 +92,17 @@ class ControllerParsingTests(unittest.TestCase):
         self.assertEqual(state.left_stick_x, 0)
         self.assertEqual(state.left_stick_y, 0)
         self.assertEqual(state.right_stick_x, 4001)
-        self.assertEqual(state.right_stick_y, -4002)
+        self.assertEqual(state.right_stick_y, -4001)
+
+    def test_rumble_packet_uses_gip_host_header_and_full_payload(self):
+        sent = []
+        self.ctrl._send = sent.append
+        self.ctrl.set_rumble(left=10, right=20, left_trigger=30, right_trigger=40)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(
+            sent[0],
+            bytes([0x09, 0x20, 0x00, 0x09, 0x00, 0x0F, 30, 40, 10, 20, 0xFF, 0x00, 0x00]),
+        )
 
 
 if __name__ == "__main__":

@@ -299,8 +299,8 @@ class PDP360Controller:
         lx, ly, rx, ry = struct.unpack_from("<hhhh", data, 10)
 
         # Match the established Xbox One interpretation used by xpad.
-        ly = ~ly
-        ry = ~ry
+        ly = self._invert_axis(ly)
+        ry = self._invert_axis(ry)
 
         dz = self._dead_zone
         if abs(lx) <= dz:
@@ -336,16 +336,25 @@ class PDP360Controller:
             right_stick_y=ry,
         )
 
+    @staticmethod
+    def _invert_axis(value: int) -> int:
+        if value == -32768:
+            return 32767
+        return -value
+
     # -- Writing output -------------------------------------------------------
 
     def set_rumble(self, left: int = 0, right: int = 0,
                    left_trigger: int = 0, right_trigger: int = 0) -> None:
-        msg = bytes([0x09, 0x00, 0x00, 0x09, 0x00, 0x0F,
-                     min(255, max(0, left_trigger)),
-                     min(255, max(0, right_trigger)),
-                     min(255, max(0, left)),
-                     min(255, max(0, right)),
-                     0xFF, 0x00])
+        msg = bytes([
+            0x09, 0x20, 0x00, 0x09,
+            0x00, 0x0F,
+            min(255, max(0, left_trigger)),
+            min(255, max(0, right_trigger)),
+            min(255, max(0, left)),
+            min(255, max(0, right)),
+            0xFF, 0x00, 0x00,
+        ])
         self._send(msg)
 
     def set_led(self, brightness: int = 20) -> None:
