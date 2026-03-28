@@ -112,18 +112,21 @@ python3 -m venv --copies "${VENV_ROOT}"
 "${VENV_ROOT}/bin/pip" install --quiet --upgrade pip
 "${VENV_ROOT}/bin/pip" install --quiet "${SCRIPT_DIR}"
 
-echo "==> Signing embedded Python for virtual HID entitlement..."
-sign_target "${VENV_ROOT}/bin/python3"
-sign_target "${VENV_ROOT}/bin/python"
+echo "==> Building and signing native HID helper..."
+HELPER_SRC="${SCRIPT_DIR}/helper"
+HELPER_BIN="${VENV_ROOT}/bin/taurino-hid-helper"
+clang -Wall -Wextra -O2 \
+    -framework CoreFoundation -framework IOKit \
+    -o "${HELPER_BIN}" "${HELPER_SRC}/taurino_hid_helper.c"
+sign_target "${HELPER_BIN}"
 
 if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
-    echo "==> Using ad-hoc signing. If macOS still rejects virtual HID on this"
-    echo "    machine, rebuild with TAURINO_CODESIGN_IDENTITY set to an Apple"
-    echo "    signing identity."
+    echo "==> Using ad-hoc signing for the HID helper. If macOS rejects the"
+    echo "    virtual HID device, rebuild with TAURINO_CODESIGN_IDENTITY set"
+    echo "    to an Apple signing identity."
 else
-    echo "==> Installed runtime will be signed without hardened runtime."
-    echo "    This avoids launch-time library validation failures against"
-    echo "    Homebrew's unsigned Python framework and extension modules."
+    echo "==> HID helper binary signed with developer identity."
+    echo "    Only the helper needs the HID entitlement — not Python."
 fi
 
 echo "==> Virtualenv ready ($(du -sh "${VENV_ROOT}" | cut -f1))"
@@ -229,10 +232,12 @@ echo ""
 echo "  CLI:     taurino --help"
 echo "  GUI:     taurino gui"
 echo "  Bridge:  taurino bridge"
+echo "  Doctor:  taurino doctor"
 echo "  Scan:    taurino scan"
 echo ""
-echo "  Note: system-wide virtual HID on macOS 13+ requires a signed build"
-echo "  with the com.apple.developer.hid.virtual.device entitlement."
+echo "  The native HID helper binary handles"
+echo "  virtual gamepad creation (no Python"
+echo "  code-signing required)."
 echo ""
 echo "  The bridge auto-starts when a PDP"
 echo "  controller is plugged in."
@@ -291,6 +296,7 @@ PDP Xbox Controller Driver for macOS
 This installer will set up:
   • The taurino CLI at /usr/local/bin/taurino
   • A Python virtualenv at /usr/local/lib/taurino/
+  • A native HID helper binary (codesigned for virtual gamepad)
   • A LaunchAgent that auto-starts the controller bridge
     when a PDP gamepad is connected
 
@@ -298,6 +304,7 @@ After installation, run:
   taurino gui        — visual controller tester
   taurino bridge     — forward to macOS apps
   taurino scan       — list connected controllers
+  taurino doctor     — verify helper binary status
         ]]>
     </welcome>
 

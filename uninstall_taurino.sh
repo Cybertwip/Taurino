@@ -15,7 +15,13 @@ if [ -f "${AGENT}" ]; then
     echo "  Removed LaunchAgent"
 fi
 
-# Remove virtualenv
+# Clean up HID helper socket
+if [ -S /tmp/taurino-hid.sock ]; then
+    rm -f /tmp/taurino-hid.sock
+    echo "  Removed HID helper socket"
+fi
+
+# Remove virtualenv (includes the native HID helper)
 if [ -d /usr/local/lib/taurino ]; then
     sudo rm -rf /usr/local/lib/taurino
     echo "  Removed /usr/local/lib/taurino/"

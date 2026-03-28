@@ -2,7 +2,7 @@
 
 from .state import ControllerState, Button
 from .controller import PDP360Controller, DeviceNotFoundError
-from .bridge import VirtualHIDGamepad, UDPBroadcaster, ControllerBridge
+from .bridge import VirtualHIDGamepad, HIDHelperError, UDPBroadcaster, ControllerBridge
 
 __all__ = [
     "ControllerState",
@@ -10,6 +10,7 @@ __all__ = [
     "PDP360Controller",
     "DeviceNotFoundError",
     "VirtualHIDGamepad",
+    "HIDHelperError",
     "UDPBroadcaster",
     "ControllerBridge",
 ]

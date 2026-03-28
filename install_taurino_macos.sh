@@ -43,14 +43,18 @@ python3 -m venv --copies "${INSTALL_ROOT}"
 "${INSTALL_ROOT}/bin/pip" install --quiet --upgrade pip
 "${INSTALL_ROOT}/bin/pip" install --quiet "${SCRIPT_DIR}"
 
-echo "==> Signing Taurino runtime"
-sign_target "${INSTALL_ROOT}/bin/python"
-if [[ -f "${INSTALL_ROOT}/bin/python3" ]]; then
-    sign_target "${INSTALL_ROOT}/bin/python3"
-fi
+echo "==> Building native HID helper"
+HELPER_SRC="${SCRIPT_DIR}/helper"
+HELPER_BIN="${INSTALL_ROOT}/bin/taurino-hid-helper"
+clang -Wall -Wextra -O2 \
+    -framework CoreFoundation -framework IOKit \
+    -o "${HELPER_BIN}" "${HELPER_SRC}/taurino_hid_helper.c"
 
-echo "==> Installed runtime is signed without hardened runtime"
-echo "    to avoid library validation failures against Homebrew Python."
+echo "==> Signing HID helper binary"
+sign_target "${HELPER_BIN}"
+
+echo "==> Helper binary signed (only the helper needs the HID entitlement,"
+echo "    not the Python runtime)"
 
 echo "==> Installing launcher"
 mkdir -p "${BIN_DIR}"
@@ -103,9 +107,9 @@ cat > "${LAUNCH_AGENT}" << 'PLIST'
 PLIST
 chmod 644 "${LAUNCH_AGENT}"
 
-echo "==> Verifying HID entitlement on installed runtime"
-if ! codesign -d --entitlements :- "${INSTALL_ROOT}/bin/python" 2>&1 | grep -q "com.apple.developer.hid.virtual.device"; then
-    echo "Installed runtime does not expose com.apple.developer.hid.virtual.device." >&2
+echo "==> Verifying HID entitlement on helper binary"
+if ! codesign -d --entitlements :- "${HELPER_BIN}" 2>&1 | grep -q "com.apple.developer.hid.virtual.device"; then
+    echo "Helper binary does not expose com.apple.developer.hid.virtual.device." >&2
     echo "If ad-hoc signing is insufficient on this machine, rerun with TAURINO_CODESIGN_IDENTITY set to an Apple signing identity." >&2
 fi
 
@@ -115,5 +119,5 @@ launchctl bootstrap "gui/$(id -u "${CONSOLE_USER}")" "${LAUNCH_AGENT}" 2>/dev/nu
 
 echo
 echo "Taurino installed."
-echo "Use /usr/local/bin/taurino doctor to verify the runtime entitlement."
+echo "Use /usr/local/bin/taurino doctor to verify the helper binary."
 echo "Use /usr/local/bin/taurino bridge to run the system-wide HID bridge."

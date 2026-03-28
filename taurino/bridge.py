@@ -1,129 +1,86 @@
 """Virtual HID gamepad bridge for macOS.
 
-Attempts to create a system-level virtual HID gamepad via IOKit's
-IOHIDUserDevice API so that *all* macOS applications (including games)
-see the PDP controller as a standard gamepad.
+Architecture:
 
-Fallback: a localhost UDP broadcast that any custom app can consume.
+    Python (taurino bridge)
+        ──[Unix socket]──▶  taurino-hid-helper  (native C binary, codesigned)
+                               ──[IOKit]──▶  macOS HID subsystem
 
-NOTE — On macOS 13 (Ventura) and later, IOHIDUserDeviceCreate requires
-the calling binary to be signed with the
-    com.apple.developer.hid.virtual.device
-entitlement.  If creation fails the bridge falls back to UDP only and
-prints instructions.
+The ``taurino-hid-helper`` binary handles all IOKit/HID calls and must be
+codesigned with the ``com.apple.developer.hid.virtual.device`` entitlement.
+Only the small helper needs to be signed — not the entire Python runtime.
+
+Fallback: a localhost UDP broadcast that any custom consumer can receive.
 """
 
-import ctypes
-import ctypes.util
 import os
+import shutil
 import socket
 import struct
 import subprocess
-import sys
-import threading
 import time
 
-from .protocol import GAMEPAD_HID_DESCRIPTOR, GAMEPAD_REPORT_SIZE
+from .protocol import GAMEPAD_REPORT_SIZE
 from .state import ControllerState
 
 
-HID_VIRTUAL_DEVICE_ENTITLEMENT = "com.apple.developer.hid.virtual.device"
-DISABLE_LIBRARY_VALIDATION_ENTITLEMENT = "com.apple.security.cs.disable-library-validation"
+# ---------------------------------------------------------------------------
+#  Paths
+# ---------------------------------------------------------------------------
+
+HELPER_BINARY_NAME = "taurino-hid-helper"
+HELPER_SOCKET_PATH = "/tmp/taurino-hid.sock"
 INSTALL_ROOT = "/usr/local/lib/taurino"
-INSTALL_PYTHON = f"{INSTALL_ROOT}/bin/python"
+INSTALL_HELPER = f"{INSTALL_ROOT}/bin/{HELPER_BINARY_NAME}"
 INSTALL_LAUNCHER = "/usr/local/bin/taurino"
 LAUNCH_AGENT_PATH = "/Library/LaunchAgents/com.taurino.bridge.plist"
 
+HID_VIRTUAL_DEVICE_ENTITLEMENT = "com.apple.developer.hid.virtual.device"
 
-def _codesign_entitlements_text(executable: str) -> str | None:
+
+# ---------------------------------------------------------------------------
+#  Helper discovery & diagnostics
+# ---------------------------------------------------------------------------
+
+def _find_helper() -> str | None:
+    """Locate the taurino-hid-helper binary."""
+    candidates = [
+        INSTALL_HELPER,
+        os.path.join(os.path.dirname(__file__), "..", "helper", HELPER_BINARY_NAME),
+    ]
+    for path in candidates:
+        resolved = os.path.realpath(path)
+        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+            return resolved
+    return shutil.which(HELPER_BINARY_NAME)
+
+
+def _helper_has_entitlement(path: str) -> bool | None:
+    """Check whether the helper binary has the HID virtual-device entitlement."""
     try:
         result = subprocess.run(
-            ["codesign", "-d", "--entitlements", "-", executable],
-            capture_output=True,
-            check=False,
-            text=True,
+            ["codesign", "-d", "--entitlements", "-", path],
+            capture_output=True, check=False, text=True,
         )
     except OSError:
         return None
     if result.returncode != 0:
-        combined = ((result.stdout or "") + (result.stderr or "")).lower()
-        if "not signed at all" in combined or "code object is not signed" in combined:
-            return ""
-        return None
-    return (result.stdout or "") + (result.stderr or "")
-
-
-def has_hid_virtual_device_entitlement(executable: str) -> bool | None:
-    text = _codesign_entitlements_text(executable)
-    if text is None:
-        return None
+        return False
+    text = (result.stdout or "") + (result.stderr or "")
     return HID_VIRTUAL_DEVICE_ENTITLEMENT in text
 
 
-def has_disable_library_validation_entitlement(executable: str) -> bool | None:
-    text = _codesign_entitlements_text(executable)
-    if text is None:
-        return None
-    return DISABLE_LIBRARY_VALIDATION_ENTITLEMENT in text
-
-
-def is_hardened_runtime_enabled(executable: str) -> bool | None:
-    try:
-        result = subprocess.run(
-            ["codesign", "-d", "--verbose=4", executable],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        combined = ((result.stdout or "") + (result.stderr or "")).lower()
-        if "not signed at all" in combined or "code object is not signed" in combined:
-            return False
-        return None
-    text = (result.stdout or "") + (result.stderr or "")
-    return "flags=0x10000(runtime)" in text
-
-
-def likely_library_validation_failure(executable: str) -> bool:
-    hardened = is_hardened_runtime_enabled(executable)
-    disable_lv = has_disable_library_validation_entitlement(executable)
-    return hardened is True and disable_lv is not True
-
-
-def status_has_library_validation_risk(hardened: bool | None,
-                                       disable_lv: bool | None) -> bool:
-    return hardened is True and disable_lv is not True
-
-
 def get_bridge_runtime_status() -> dict[str, object]:
-    current_executable = sys.executable
-    installed_runtime_exists = os.path.exists(INSTALL_PYTHON)
-    installed_launcher_exists = os.path.exists(INSTALL_LAUNCHER)
+    helper_path = _find_helper()
+    helper_exists = helper_path is not None
     return {
-        "current_executable": current_executable,
-        "current_has_entitlement": has_hid_virtual_device_entitlement(
-            current_executable),
-        "current_disable_library_validation": (
-            has_disable_library_validation_entitlement(current_executable)
+        "helper_path": helper_path or INSTALL_HELPER,
+        "helper_exists": helper_exists,
+        "helper_codesigned": (
+            _helper_has_entitlement(helper_path) if helper_exists else None
         ),
-        "current_hardened_runtime": is_hardened_runtime_enabled(current_executable),
-        "installed_runtime_exists": installed_runtime_exists,
-        "installed_python": INSTALL_PYTHON if installed_runtime_exists else None,
-        "installed_has_entitlement": (
-            has_hid_virtual_device_entitlement(INSTALL_PYTHON)
-            if installed_runtime_exists else None
-        ),
-        "installed_disable_library_validation": (
-            has_disable_library_validation_entitlement(INSTALL_PYTHON)
-            if installed_runtime_exists else None
-        ),
-        "installed_hardened_runtime": (
-            is_hardened_runtime_enabled(INSTALL_PYTHON)
-            if installed_runtime_exists else None
-        ),
-        "installed_launcher_exists": installed_launcher_exists,
+        "helper_socket_exists": os.path.exists(HELPER_SOCKET_PATH),
+        "installed_launcher_exists": os.path.exists(INSTALL_LAUNCHER),
         "launch_agent_exists": os.path.exists(LAUNCH_AGENT_PATH),
     }
 
@@ -131,282 +88,133 @@ def get_bridge_runtime_status() -> dict[str, object]:
 def format_bridge_doctor_report() -> str:
     status = get_bridge_runtime_status()
 
-    def fmt(value: bool | None) -> str:
-        if value is True:
+    def fmt(val: bool | None) -> str:
+        if val is True:
             return "present"
-        if value is False:
+        if val is False:
             return "missing"
         return "unknown"
 
     lines = [
         "Taurino bridge doctor",
         "",
-        f"Current runtime: {status['current_executable']}",
-        f"Current HID entitlement: {fmt(status['current_has_entitlement'])}",
-        f"Current hardened runtime: {fmt(status['current_hardened_runtime'])}",
-        "Current disable-library-validation: "
-        f"{fmt(status['current_disable_library_validation'])}",
-        f"Installed launcher: {'present' if status['installed_launcher_exists'] else 'missing'} ({INSTALL_LAUNCHER})",
-        f"Installed runtime: {'present' if status['installed_runtime_exists'] else 'missing'} ({INSTALL_PYTHON})",
-        f"Installed HID entitlement: {fmt(status['installed_has_entitlement'])}",
-        f"Installed hardened runtime: {fmt(status['installed_hardened_runtime'])}",
-        "Installed disable-library-validation: "
-        f"{fmt(status['installed_disable_library_validation'])}",
-        f"LaunchAgent: {'present' if status['launch_agent_exists'] else 'missing'} ({LAUNCH_AGENT_PATH})",
+        f"Helper binary: {fmt(status['helper_exists'])} ({status['helper_path']})",
+        f"Helper HID entitlement: {fmt(status['helper_codesigned'])}",
+        f"Helper socket: {'active' if status['helper_socket_exists'] else 'inactive'} ({HELPER_SOCKET_PATH})",
+        f"Launcher: {fmt(status['installed_launcher_exists'])} ({INSTALL_LAUNCHER})",
+        f"LaunchAgent: {fmt(status['launch_agent_exists'])} ({LAUNCH_AGENT_PATH})",
         "",
     ]
 
-    current_library_validation_risk = status_has_library_validation_risk(
-        status["current_hardened_runtime"],
-        status["current_disable_library_validation"],
-    )
-    installed_library_validation_risk = status_has_library_validation_risk(
-        status["installed_hardened_runtime"],
-        status["installed_disable_library_validation"],
-    )
-
-    if current_library_validation_risk:
+    if not status["helper_exists"]:
         lines.append(
-            "Current runtime is hardened without disable-library-validation; macOS may kill it before Taurino starts."
+            "Helper binary not found. Build it with: cd helper && make && make sign"
         )
-    elif status["current_has_entitlement"] is True:
-        lines.append("This runtime is entitled for virtual HID.")
-    elif status["installed_runtime_exists"] and installed_library_validation_risk:
+    elif status["helper_codesigned"] is not True:
         lines.append(
-            "Installed runtime is hardened without disable-library-validation. Reinstall Taurino with the updated installer or pkg."
+            "Helper binary found but not codesigned with the HID entitlement. "
+            "Sign it with: cd helper && make sign IDENTITY=\"Developer ID Application: ...\""
         )
-    elif status["installed_has_entitlement"] is True:
-        lines.append(
-            "Use /usr/local/bin/taurino bridge for system-wide HID instead of the repo Python."
-        )
+    elif status["helper_socket_exists"]:
+        lines.append("Helper is running and ready for connections.")
     else:
         lines.append(
-            "Install Taurino with sudo ./install_taurino_macos.sh or build/install the pkg to set up an entitled runtime."
-        )
-
-    return "\n".join(lines)
-
-
-def format_hid_unavailable_message(error: Exception) -> str:
-    status = get_bridge_runtime_status()
-    lines = [str(error)]
-    lines.append(f"Current runtime: {status['current_executable']}")
-
-    current_has_entitlement = status["current_has_entitlement"]
-    current_library_validation_risk = status_has_library_validation_risk(
-        status["current_hardened_runtime"],
-        status["current_disable_library_validation"],
-    )
-    installed_library_validation_risk = status_has_library_validation_risk(
-        status["installed_hardened_runtime"],
-        status["installed_disable_library_validation"],
-    )
-
-    if current_library_validation_risk:
-        lines.append(
-            "Current runtime is hardened without disable-library-validation and may be terminated by macOS before Python starts."
-        )
-    if current_has_entitlement is False:
-        lines.append(
-            "Current runtime is not signed with com.apple.developer.hid.virtual.device."
-        )
-
-    if status["installed_runtime_exists"] and installed_library_validation_risk:
-        lines.append(
-            "Installed Taurino runtime is also hardened without disable-library-validation. Reinstall with the updated installer or pkg."
-        )
-    elif status["installed_has_entitlement"] is True:
-        lines.append(
-            "Installed entitled runtime detected. Start the system bridge with /usr/local/bin/taurino bridge."
-        )
-    elif status["installed_runtime_exists"]:
-        lines.append(
-            "Installed Taurino runtime detected, but its HID entitlement is missing or unreadable. Reinstall with sudo ./install_taurino_macos.sh or rebuild the pkg."
-        )
-    else:
-        lines.append(
-            "No installed Taurino runtime detected. Install one with sudo ./install_taurino_macos.sh or build/install the pkg."
+            "Helper is properly signed. Start the bridge with: taurino bridge"
         )
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-#  IOKit Virtual HID Device
+#  Virtual HID Gamepad — talks to the native helper via Unix socket
 # ---------------------------------------------------------------------------
 
-class IOKitHIDError(Exception):
+class HIDHelperError(Exception):
     pass
 
 
 class VirtualHIDGamepad:
-    """Creates a virtual HID gamepad visible to the entire OS."""
+    """Creates a virtual HID gamepad by delegating to the codesigned
+    ``taurino-hid-helper`` process via a Unix domain socket.
+
+    The helper handles IOKit calls, so the Python runtime does not need
+    any special entitlements or code-signing.
+    """
 
     def __init__(self):
-        self._device = None
-        self._cf = None
-        self._iokit = None
-        self._rl_thread: threading.Thread | None = None
-        self._rl_ref = None
-        self._load()
-
-    # -- Framework loading ----------------------------------------------------
-
-    def _load(self):
-        try:
-            self._cf = ctypes.CDLL(
-                "/System/Library/Frameworks/"
-                "CoreFoundation.framework/CoreFoundation")
-            self._iokit = ctypes.CDLL(
-                "/System/Library/Frameworks/IOKit.framework/IOKit")
-        except OSError as e:
-            raise IOKitHIDError(f"Cannot load macOS frameworks: {e}")
-
-        cf = self._cf
-        iokit = self._iokit
-
-        # ---- CFDictionary callback structs ----------------------------------
-
-        class _KeyCB(ctypes.Structure):
-            _fields_ = [("version", ctypes.c_long),
-                        ("retain", ctypes.c_void_p),
-                        ("release", ctypes.c_void_p),
-                        ("copyDescription", ctypes.c_void_p),
-                        ("equal", ctypes.c_void_p),
-                        ("hash", ctypes.c_void_p)]
-
-        class _ValCB(ctypes.Structure):
-            _fields_ = [("version", ctypes.c_long),
-                        ("retain", ctypes.c_void_p),
-                        ("release", ctypes.c_void_p),
-                        ("copyDescription", ctypes.c_void_p),
-                        ("equal", ctypes.c_void_p)]
-
-        self._key_cbs = _KeyCB.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")
-        self._val_cbs = _ValCB.in_dll(cf, "kCFTypeDictionaryValueCallBacks")
-
-        # ---- Function signatures --------------------------------------------
-
-        cf.CFDictionaryCreateMutable.restype = ctypes.c_void_p
-        cf.CFDictionaryCreateMutable.argtypes = [
-            ctypes.c_void_p, ctypes.c_long,
-            ctypes.POINTER(_KeyCB), ctypes.POINTER(_ValCB)]
-        cf.CFDictionarySetValue.restype = None
-        cf.CFDictionarySetValue.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
-        cf.CFStringCreateWithCString.argtypes = [
-            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-        cf.CFDataCreate.restype = ctypes.c_void_p
-        cf.CFDataCreate.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
-        cf.CFNumberCreate.restype = ctypes.c_void_p
-        cf.CFNumberCreate.argtypes = [
-            ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
-        cf.CFRelease.restype = None
-        cf.CFRelease.argtypes = [ctypes.c_void_p]
-
-        # RunLoop
-        cf.CFRunLoopGetCurrent.restype = ctypes.c_void_p
-        cf.CFRunLoopGetCurrent.argtypes = []
-        cf.CFRunLoopRun.restype = None
-        cf.CFRunLoopRun.argtypes = []
-        cf.CFRunLoopStop.restype = None
-        cf.CFRunLoopStop.argtypes = [ctypes.c_void_p]
-
-        self._kCFRunLoopDefaultMode = ctypes.c_void_p.in_dll(
-            cf, "kCFRunLoopDefaultMode")
-
-        # IOKit HID
-        iokit.IOHIDUserDeviceCreate.restype = ctypes.c_void_p
-        iokit.IOHIDUserDeviceCreate.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p]
-        iokit.IOHIDUserDeviceHandleReport.restype = ctypes.c_int32
-        iokit.IOHIDUserDeviceHandleReport.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_long]
-        iokit.IOHIDUserDeviceScheduleWithRunLoop.restype = None
-        iokit.IOHIDUserDeviceScheduleWithRunLoop.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-
-    # -- CF helpers -----------------------------------------------------------
-
-    def _cfstr(self, s: str):
-        return self._cf.CFStringCreateWithCString(
-            None, s.encode("utf-8"), 0x08000100)  # kCFStringEncodingUTF8
-
-    def _cfnum(self, n: int):
-        v = ctypes.c_int32(n)
-        return self._cf.CFNumberCreate(None, 3, ctypes.byref(v))  # SInt32
-
-    def _cfdata(self, b: bytes):
-        buf = (ctypes.c_uint8 * len(b))(*b)
-        return self._cf.CFDataCreate(None, buf, len(b))
-
-    # -- Lifecycle ------------------------------------------------------------
+        self._sock: socket.socket | None = None
+        self._helper_proc: subprocess.Popen | None = None
 
     def open(self):
-        cf = self._cf
-        iokit = self._iokit
+        if not self._try_connect():
+            self._start_helper()
+            if not self._try_connect():
+                raise HIDHelperError(
+                    "Cannot connect to taurino-hid-helper. "
+                    "Build it with: cd helper && make && make sign")
 
-        props = cf.CFDictionaryCreateMutable(
-            None, 0,
-            ctypes.byref(self._key_cbs),
-            ctypes.byref(self._val_cbs))
+        # The helper sends a 1-byte status after the device is created.
+        data = self._sock.recv(1)
+        if not data or data[0] != 0x01:
+            self._sock.close()
+            self._sock = None
+            raise HIDHelperError(
+                "taurino-hid-helper failed to create virtual HID device. "
+                "Ensure the binary is codesigned with the "
+                "com.apple.developer.hid.virtual.device entitlement.")
 
-        cf.CFDictionarySetValue(props, self._cfstr("VendorID"),
-                                self._cfnum(0x0E6F))
-        cf.CFDictionarySetValue(props, self._cfstr("ProductID"),
-                                self._cfnum(0xCAFE))
-        cf.CFDictionarySetValue(props, self._cfstr("Product"),
-                                self._cfstr("Taurino Virtual Gamepad"))
-        cf.CFDictionarySetValue(props, self._cfstr("Manufacturer"),
-                                self._cfstr("Taurino"))
-        cf.CFDictionarySetValue(props, self._cfstr("Transport"),
-                                self._cfstr("Virtual"))
-        cf.CFDictionarySetValue(props, self._cfstr("ReportDescriptor"),
-                                self._cfdata(GAMEPAD_HID_DESCRIPTOR))
-
-        self._device = iokit.IOHIDUserDeviceCreate(None, props)
-        cf.CFRelease(props)
-
-        if not self._device:
-            raise IOKitHIDError("IOHIDUserDeviceCreate returned NULL.")
-
-        # Schedule on a dedicated RunLoop thread so the OS sees the device.
-        self._rl_thread = threading.Thread(
-            target=self._runloop, daemon=True, name="taurino-hid-rl")
-        self._rl_thread.start()
-        time.sleep(0.1)
-
-        print("[taurino] Virtual HID gamepad created — "
+        print("[taurino] Virtual HID gamepad created via native helper — "
               "apps should see 'Taurino Virtual Gamepad'")
 
-    def _runloop(self):
-        loop = self._cf.CFRunLoopGetCurrent()
-        self._rl_ref = loop
-        self._iokit.IOHIDUserDeviceScheduleWithRunLoop(
-            self._device, loop, self._kCFRunLoopDefaultMode)
-        self._cf.CFRunLoopRun()
+    def _try_connect(self) -> bool:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(HELPER_SOCKET_PATH)
+            self._sock = sock
+            return True
+        except (OSError, ConnectionRefusedError):
+            return False
+
+    def _start_helper(self):
+        helper_path = _find_helper()
+        if not helper_path:
+            return
+        try:
+            self._helper_proc = subprocess.Popen(
+                [helper_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            # Give the helper time to create the socket.
+            time.sleep(0.3)
+        except OSError:
+            self._helper_proc = None
 
     def send_report(self, state: ControllerState) -> bool:
-        if not self._device:
+        if not self._sock:
             return False
         report = state.pack_hid_report()
-        buf = (ctypes.c_uint8 * len(report))(*report)
-        ret = self._iokit.IOHIDUserDeviceHandleReport(
-            self._device, buf, len(report))
-        return ret == 0  # kIOReturnSuccess
+        try:
+            self._sock.sendall(report)
+            return True
+        except OSError:
+            return False
 
     def close(self):
-        if self._rl_ref:
-            self._cf.CFRunLoopStop(self._rl_ref)
-            self._rl_ref = None
-        if self._rl_thread:
-            self._rl_thread.join(timeout=1)
-            self._rl_thread = None
-        if self._device:
-            self._cf.CFRelease(self._device)
-            self._device = None
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        if self._helper_proc:
+            try:
+                self._helper_proc.terminate()
+                self._helper_proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            self._helper_proc = None
 
 
 # ---------------------------------------------------------------------------
@@ -510,14 +318,11 @@ class ControllerBridge:
             try:
                 self._hid = VirtualHIDGamepad()
                 self._hid.open()
-            except IOKitHIDError as e:
-                details = format_hid_unavailable_message(e).splitlines()
-                for index, line in enumerate(details):
-                    label = "HID bridge unavailable" if index == 0 else "HID bridge detail"
-                    print(f"[taurino] {label}: {line}")
+            except HIDHelperError as e:
+                print(f"[taurino] HID bridge unavailable: {e}")
                 if self._use_udp:
                     print("[taurino] Continuing in UDP-only mode. "
-                          "Use a signed/entitled build for system-wide HID.")
+                          "Build and codesign the helper for system-wide HID.")
                 self._hid = None
 
         if self._use_udp:
