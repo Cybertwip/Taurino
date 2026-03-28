@@ -227,7 +227,8 @@ def run_gui(vendor_id: int | None = None,
             st_conn = status_info["connected"]
             st_err = status_info["error"]
 
-        snap = cur.as_tuple()
+        # Include status in dirty check so overlay/status redraws correctly
+        snap = (cur.as_tuple(), st_text, st_conn, st_err, rumble_on, led_idx)
         if snap == prev_snap:
             clock.tick(60)
             continue
@@ -291,8 +292,10 @@ def run_gui(vendor_id: int | None = None,
         # Disconnected overlay
         if not st_conn:
             ww, wh = screen.get_size()
-            ov = pygame.Surface((ww, wh), pygame.SRCALPHA)
-            ov.fill((8, 12, 16, 140))
+            # Dim overlay — use fill + set_alpha (no per-pixel alpha alloc)
+            ov = pygame.Surface((ww, wh))
+            ov.fill((8, 12, 16))
+            ov.set_alpha(140)
             screen.blit(ov, (0, 0))
             r = sr(280, 300, 540, 120)
             pygame.draw.rect(screen, PANEL2, r, border_radius=max(1, si(20)))
