@@ -82,6 +82,11 @@ def cmd_bridge(vid, pid, no_hid, no_udp):
         bridge.start()
 
 
+def cmd_doctor():
+    from .bridge import format_bridge_doctor_report
+    print(format_bridge_doctor_report())
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="taurino",
@@ -109,6 +114,7 @@ def main():
                     help="Skip IOKit virtual HID device")
     bp.add_argument("--no-udp", action="store_true",
                     help="Skip UDP broadcast")
+    sub.add_parser("doctor", help="Show runtime, install, and HID entitlement status")
 
     args = p.parse_args()
 
@@ -124,6 +130,8 @@ def main():
         cmd_gui(args.vid, args.pid)
     elif args.command == "bridge":
         cmd_bridge(args.vid, args.pid, args.no_hid, args.no_udp)
+    elif args.command == "doctor":
+        cmd_doctor()
     else:
         p.print_help()
         print("\nQuick start:")
@@ -132,6 +140,7 @@ def main():
         print("  python -m taurino monitor    # live input display")
         print("  python -m taurino gui        # pygame visual tester")
         print("  python -m taurino bridge     # forward to macOS apps")
+        print("  python -m taurino doctor     # verify install/entitlements")
 
 
 if __name__ == "__main__":

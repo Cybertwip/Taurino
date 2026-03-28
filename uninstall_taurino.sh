@@ -8,8 +8,9 @@ echo "Uninstalling Taurino..."
 
 # Stop the bridge LaunchAgent
 AGENT="/Library/LaunchAgents/com.taurino.bridge.plist"
+CURRENT_USER="${SUDO_USER:-$(stat -f '%Su' /dev/console)}"
 if [ -f "${AGENT}" ]; then
-    launchctl bootout "gui/$(id -u)" "${AGENT}" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u "${CURRENT_USER}")" "${AGENT}" 2>/dev/null || true
     sudo rm -f "${AGENT}"
     echo "  Removed LaunchAgent"
 fi

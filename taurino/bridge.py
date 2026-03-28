@@ -15,13 +15,127 @@ prints instructions.
 
 import ctypes
 import ctypes.util
+import os
 import socket
 import struct
+import subprocess
+import sys
 import threading
 import time
 
 from .protocol import GAMEPAD_HID_DESCRIPTOR, GAMEPAD_REPORT_SIZE
 from .state import ControllerState
+
+
+HID_VIRTUAL_DEVICE_ENTITLEMENT = "com.apple.developer.hid.virtual.device"
+INSTALL_ROOT = "/usr/local/lib/taurino"
+INSTALL_PYTHON = f"{INSTALL_ROOT}/bin/python"
+INSTALL_LAUNCHER = "/usr/local/bin/taurino"
+LAUNCH_AGENT_PATH = "/Library/LaunchAgents/com.taurino.bridge.plist"
+
+
+def _codesign_entitlements_text(executable: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--entitlements", "-", executable],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def has_hid_virtual_device_entitlement(executable: str) -> bool | None:
+    text = _codesign_entitlements_text(executable)
+    if text is None:
+        return None
+    return HID_VIRTUAL_DEVICE_ENTITLEMENT in text
+
+
+def get_bridge_runtime_status() -> dict[str, object]:
+    current_executable = sys.executable
+    installed_runtime_exists = os.path.exists(INSTALL_PYTHON)
+    installed_launcher_exists = os.path.exists(INSTALL_LAUNCHER)
+    return {
+        "current_executable": current_executable,
+        "current_has_entitlement": has_hid_virtual_device_entitlement(
+            current_executable),
+        "installed_runtime_exists": installed_runtime_exists,
+        "installed_python": INSTALL_PYTHON if installed_runtime_exists else None,
+        "installed_has_entitlement": (
+            has_hid_virtual_device_entitlement(INSTALL_PYTHON)
+            if installed_runtime_exists else None
+        ),
+        "installed_launcher_exists": installed_launcher_exists,
+        "launch_agent_exists": os.path.exists(LAUNCH_AGENT_PATH),
+    }
+
+
+def format_bridge_doctor_report() -> str:
+    status = get_bridge_runtime_status()
+
+    def fmt(value: bool | None) -> str:
+        if value is True:
+            return "present"
+        if value is False:
+            return "missing"
+        return "unknown"
+
+    lines = [
+        "Taurino bridge doctor",
+        "",
+        f"Current runtime: {status['current_executable']}",
+        f"Current HID entitlement: {fmt(status['current_has_entitlement'])}",
+        f"Installed launcher: {'present' if status['installed_launcher_exists'] else 'missing'} ({INSTALL_LAUNCHER})",
+        f"Installed runtime: {'present' if status['installed_runtime_exists'] else 'missing'} ({INSTALL_PYTHON})",
+        f"Installed HID entitlement: {fmt(status['installed_has_entitlement'])}",
+        f"LaunchAgent: {'present' if status['launch_agent_exists'] else 'missing'} ({LAUNCH_AGENT_PATH})",
+        "",
+    ]
+
+    if status["current_has_entitlement"] is True:
+        lines.append("This runtime is entitled for virtual HID.")
+    elif status["installed_has_entitlement"] is True:
+        lines.append(
+            "Use /usr/local/bin/taurino bridge for system-wide HID instead of the repo Python."
+        )
+    else:
+        lines.append(
+            "Install Taurino with sudo ./install_taurino_macos.sh or build/install the pkg to set up an entitled runtime."
+        )
+
+    return "\n".join(lines)
+
+
+def format_hid_unavailable_message(error: Exception) -> str:
+    status = get_bridge_runtime_status()
+    lines = [str(error)]
+    lines.append(f"Current runtime: {status['current_executable']}")
+
+    current_has_entitlement = status["current_has_entitlement"]
+    if current_has_entitlement is False:
+        lines.append(
+            "Current runtime is not signed with com.apple.developer.hid.virtual.device."
+        )
+
+    if status["installed_has_entitlement"] is True:
+        lines.append(
+            "Installed entitled runtime detected. Start the system bridge with /usr/local/bin/taurino bridge."
+        )
+    elif status["installed_runtime_exists"]:
+        lines.append(
+            "Installed Taurino runtime detected, but its HID entitlement is missing or unreadable. Reinstall with sudo ./install_taurino_macos.sh or rebuild the pkg."
+        )
+    else:
+        lines.append(
+            "No installed Taurino runtime detected. Install one with sudo ./install_taurino_macos.sh or build/install the pkg."
+        )
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -163,11 +277,7 @@ class VirtualHIDGamepad:
         cf.CFRelease(props)
 
         if not self._device:
-            raise IOKitHIDError(
-                "IOHIDUserDeviceCreate returned NULL.\n"
-                "On macOS 13+ this requires the "
-                "com.apple.developer.hid.virtual.device entitlement.\n"
-                "The bridge will fall back to UDP broadcast.")
+            raise IOKitHIDError("IOHIDUserDeviceCreate returned NULL.")
 
         # Schedule on a dedicated RunLoop thread so the OS sees the device.
         self._rl_thread = threading.Thread(
@@ -308,7 +418,10 @@ class ControllerBridge:
                 self._hid = VirtualHIDGamepad()
                 self._hid.open()
             except IOKitHIDError as e:
-                print(f"[taurino] HID bridge unavailable: {e}")
+                details = format_hid_unavailable_message(e).splitlines()
+                for index, line in enumerate(details):
+                    label = "HID bridge unavailable" if index == 0 else "HID bridge detail"
+                    print(f"[taurino] {label}: {line}")
                 if self._use_udp:
                     print("[taurino] Continuing in UDP-only mode. "
                           "Use a signed/entitled build for system-wide HID.")

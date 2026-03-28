@@ -18,29 +18,35 @@ set -euo pipefail
 VERSION="1.0.0"
 IDENTIFIER="com.taurino.driver"
 PKG_NAME="Taurino-${VERSION}.pkg"
-CODE_SIGN_IDENTITY="${TAURINO_CODESIGN_IDENTITY:-}"
+CODE_SIGN_IDENTITY="${TAURINO_CODESIGN_IDENTITY:--}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 PAYLOAD="${BUILD_DIR}/payload"
 SCRIPTS="${BUILD_DIR}/scripts"
-ENTITLEMENTS="${BUILD_DIR}/taurino-hid.entitlements"
+ENTITLEMENTS="${SCRIPT_DIR}/packaging/taurino-hid.entitlements"
+
+sign_target() {
+    local target="$1"
+    if [ ! -f "${target}" ]; then
+        return 0
+    fi
+    if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
+        codesign --force --sign - --entitlements "${ENTITLEMENTS}" "${target}"
+    else
+        codesign \
+            --force \
+            --sign "${CODE_SIGN_IDENTITY}" \
+            --entitlements "${ENTITLEMENTS}" \
+            --timestamp \
+            --options runtime \
+            "${target}"
+    fi
+}
 
 echo "==> Cleaning previous build..."
 rm -rf "${BUILD_DIR}"
 mkdir -p "${PAYLOAD}" "${SCRIPTS}"
-
-cat > "${ENTITLEMENTS}" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-        <key>com.apple.developer.hid.virtual.device</key>
-        <true/>
-</dict>
-</plist>
-PLIST
 
 # --------------------------------------------------------------------------
 #  1) Create a self-contained virtualenv inside the payload
@@ -53,25 +59,14 @@ python3 -m venv --copies "${VENV_ROOT}"
 "${VENV_ROOT}/bin/pip" install --quiet --upgrade pip
 "${VENV_ROOT}/bin/pip" install --quiet "${SCRIPT_DIR}"
 
-if [ -n "${CODE_SIGN_IDENTITY}" ]; then
-    echo "==> Signing embedded Python for virtual HID entitlement..."
-    codesign \
-        --force \
-        --sign "${CODE_SIGN_IDENTITY}" \
-        --entitlements "${ENTITLEMENTS}" \
-        --timestamp \
-        --options runtime \
-        "${VENV_ROOT}/bin/python3"
-    codesign \
-        --force \
-        --sign "${CODE_SIGN_IDENTITY}" \
-        --entitlements "${ENTITLEMENTS}" \
-        --timestamp \
-        --options runtime \
-        "${VENV_ROOT}/bin/python"
-else
-    echo "==> No TAURINO_CODESIGN_IDENTITY set; system-wide virtual HID will"
-    echo "    continue to fall back to UDP-only mode on macOS 13+."
+echo "==> Signing embedded Python for virtual HID entitlement..."
+sign_target "${VENV_ROOT}/bin/python3"
+sign_target "${VENV_ROOT}/bin/python"
+
+if [ "${CODE_SIGN_IDENTITY}" = "-" ]; then
+    echo "==> Using ad-hoc signing. If macOS still rejects virtual HID on this"
+    echo "    machine, rebuild with TAURINO_CODESIGN_IDENTITY set to an Apple"
+    echo "    signing identity."
 fi
 
 echo "==> Virtualenv ready ($(du -sh "${VENV_ROOT}" | cut -f1))"
